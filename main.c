@@ -11,7 +11,6 @@ int main()
     pid_t spid, gpid, ipid, wpid;
     int status;
 
-    /* 여기서 SIGCHLD 시그널  등록 */
 
     printf("메인 함수입니다.\n");
     printf("시스템 서버를 생성합니다.\n");
