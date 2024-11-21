@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -13,24 +14,19 @@
 
 static int timer = 0;
 
-void sighandler_timer(int sig) {
+static void timer_expire_signal_handler()
+{
     timer++;
-    time_t rawTime;
-    struct tm* formattedTime;
-    rawTime = time(NULL);
+}
 
-    formattedTime = localtime(&rawTime);
+void set_periodic_timer(long sec_delay, long usec_delay)
+{
+    struct itimerval itimer_val = {
+         .it_interval = { .tv_sec = sec_delay, .tv_usec = usec_delay },
+         .it_value = { .tv_sec = sec_delay, .tv_usec = usec_delay }
+    };
 
-    int year = formattedTime->tm_year + 1900;
-    int month = formattedTime->tm_mon + 1;
-    int day = formattedTime->tm_mday;
-    int hour = formattedTime->tm_hour;
-    int min = formattedTime->tm_min;
-    int sec = formattedTime->tm_sec;
-
-    printf("Current Time Info : %d year %d month %d day %d:%d:%d\n"
-           "    timer_count : %d\n",
-           year, month, day, hour, min, sec, timer);
+    setitimer(ITIMER_REAL, &itimer_val, (struct itimerval*)0);
 }
 
 int posix_sleep_ms(unsigned int timeout_ms) {
@@ -42,30 +38,83 @@ int posix_sleep_ms(unsigned int timeout_ms) {
     return nanosleep(&sleep_time, NULL);
 }
 
+void *watchdog_thread(void *arg) 
+{
+    char *msg = arg;
+    printf("%s", msg);
+    while(1) {
+        sleep(1);
+    }
+    return 0;
+}
+
+void *monitor_thread(void *arg) 
+{
+    char *msg = arg;
+    printf("%s", msg);
+    while(1) {
+        sleep(1);
+    }
+    return 0;
+}
+
+void *disk_service_thread(void *arg) 
+{
+    char *msg = arg;
+    printf("%s", msg);
+    while(1) {
+        sleep(1);
+    }
+    return 0;
+}
+
+void *camera_service_thread(void *arg) 
+{
+    char *msg = arg;
+    printf("%s", msg);
+    while(1) {
+        sleep(1);
+    }
+    return 0;
+}
+
 int system_server() {
-    struct itimerval ts;
-    struct sigaction sa;
+    struct itimerspec ts;
+    struct sigaction  sa;
+    struct sigevent   sev;
+    timer_t *tidlist;
+    int retcode;
+    
+    // Declare thread IDs
+    pthread_t watchdog_thread_tid, monitor_thread_tid, disk_service_thread_tid, camera_service_thread_tid;
 
-    printf("system_server Process...!\n");
+    printf("나 system_server 프로세스!\n");
 
-    memset(&sa, 0, sizeof(struct sigaction));
-    sigemptyset(&sa.sa_mask);
+    signal(SIGALRM, timer_expire_signal_handler);
+    set_periodic_timer(5, 0);
 
-    sa.sa_flags = 0;
-    sa.sa_handler = sighandler_timer;
-
-    ts.it_value.tv_sec = 5;     
-    ts.it_value.tv_usec = 0;
-    ts.it_interval.tv_sec = 5;  
-    ts.it_interval.tv_usec = 0;
-
-    if (sigaction(SIGALRM, &sa, NULL) == -1) { 
-        fprintf(stderr, "timer signal init error\n");
+    // Create threads
+    retcode = pthread_create(&watchdog_thread_tid, NULL, watchdog_thread, "watchdog thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Failed to create watchdog thread\n");
         exit(EXIT_FAILURE);
     }
-
-    if (setitimer(ITIMER_REAL, &ts, NULL) == -1) { 
-        fprintf(stderr, "set timer error\n");
+    
+    retcode = pthread_create(&monitor_thread_tid, NULL, monitor_thread, "monitor thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Failed to create monitor thread\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    retcode = pthread_create(&disk_service_thread_tid, NULL, disk_service_thread, "disk service thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Failed to create disk service thread\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    retcode = pthread_create(&camera_service_thread_tid, NULL, camera_service_thread, "camera service thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Failed to create camera service thread\n");
         exit(EXIT_FAILURE);
     }
 
