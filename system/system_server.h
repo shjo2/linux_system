@@ -9,7 +9,9 @@
 #include <errno.h>      /* Declares errno and defines error constants */
 #include <string.h>     /* Commonly used string-handling functions */
 #include <stdbool.h>    /* 'bool' type plus 'true' and 'false' constants */
+#include <time.h>
 
 int create_system_server();
+int posix_sleep_ms(unsigned int timeout_ms);
 
 #endif /* _SYSTEM_SERVER_H */

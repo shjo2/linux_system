@@ -16,6 +16,7 @@
 #include <input.h>
 #include <web_server.h>
 #include <execinfo.h>
+#include <time.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
@@ -60,6 +61,7 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   exit(EXIT_FAILURE);
 }
 
+
 void *sensor_thread(void* arg)
 {
     char *s = arg;
@@ -72,6 +74,7 @@ void *sensor_thread(void* arg)
 
     return 0;
 }
+
 
 int toy_send(char **args);
 int toy_shell(char **args);
@@ -226,9 +229,11 @@ void *command_thread(void* arg)
 
 int input()
 {
-    printf("나 input 프로세스!\n");
-
+    int retcode;
     struct sigaction sa;
+    pthread_t command_thread_tid, sensor_thread_tid;
+
+    printf("나 input 프로세스!\n");
 
     memset(&sa, 0, sizeof(sigaction));
     sigemptyset(&sa.sa_mask);
@@ -236,7 +241,19 @@ int input()
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sa.sa_sigaction = segfault_handler;
 
-    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
+
+    retcode = pthread_create(&command_thread_tid, NULL, command_thread, "command thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Falied create command thread\n");
+        exit(EXIT_FAILURE);
+    }
+
+    retcode = pthread_create(&sensor_thread_tid, NULL, sensor_thread, "sensor thread\n");
+    if (retcode != 0) {
+        fprintf(stderr, "Falied create sensor thread\n");
+        exit(EXIT_FAILURE);
+    }
 
     while (1) {
         sleep(1);
