@@ -16,10 +16,10 @@
 #include <input.h>
 #include <web_server.h>
 #include <execinfo.h>
-#include <time.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
+#define TOY_BUFFSIZE 1024
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -28,6 +28,10 @@ typedef struct _sig_ucontext {
     struct sigcontext uc_mcontext;
     sigset_t uc_sigmask;
 } sig_ucontext_t;
+
+static pthread_mutex_t global_message_mutex  = PTHREAD_MUTEX_INITIALIZER;
+
+static char global_message[TOY_BUFFSIZE];
 
 void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   void * array[50];
@@ -38,7 +42,7 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
 
   uc = (sig_ucontext_t *) ucontext;
 
-  caller_address = (void *) uc->uc_mcontext.rip;  // RIP: x86_64 specific     arm_pc: ARM
+  caller_address = (void *) uc->uc_mcontext.rip;
 
   fprintf(stderr, "\n");
 
@@ -61,14 +65,24 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   exit(EXIT_FAILURE);
 }
 
-
 void *sensor_thread(void* arg)
 {
+    char saved_message[TOY_BUFFSIZE];
     char *s = arg;
+    int i = 0;
 
     printf("%s", s);
 
     while (1) {
+        i = 0;
+        pthread_mutex_lock(&global_message_mutex);
+        while (global_message[i] != NULL) {
+            printf("%c", global_message[i]);
+            fflush(stdout);
+            posix_sleep_ms(500);
+            i++;
+        }
+        pthread_mutex_unlock(&global_message_mutex);
         posix_sleep_ms(5000);
     }
 
@@ -77,17 +91,20 @@ void *sensor_thread(void* arg)
 
 
 int toy_send(char **args);
+int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
     "send",
+    "mu",
     "sh",
     "exit"
 };
 
 int (*builtin_func[]) (char **) = {
     &toy_send,
+    &toy_mutex,
     &toy_shell,
     &toy_exit
 };
@@ -101,6 +118,19 @@ int toy_send(char **args)
 {
     printf("send message: %s\n", args[1]);
 
+    return 1;
+}
+
+int toy_mutex(char **args)
+{
+    if (args[1] == NULL) {
+        return 1;
+    }
+
+    printf("save message: %s\n", args[1]);
+    pthread_mutex_lock(&global_message_mutex);
+    strcpy(global_message, args[1]);
+    pthread_mutex_unlock(&global_message_mutex);
     return 1;
 }
 
@@ -122,10 +152,8 @@ int toy_shell(char **args)
         exit(EXIT_FAILURE);
     } else if (pid < 0) {
         perror("toy");
-    } else
-{
-        do
-        {
+    } else {
+        do {
             waitpid(pid, &status, WUNTRACED);
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     }
@@ -210,7 +238,6 @@ void toy_loop(void)
         line = toy_read_line();
         args = toy_split_line(line);
         status = toy_execute(args);
-
         free(line);
         free(args);
     } while (status);
@@ -241,19 +268,12 @@ int input()
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sa.sa_sigaction = segfault_handler;
 
-    sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
+    sigaction(SIGSEGV, &sa, NULL); 
 
     retcode = pthread_create(&command_thread_tid, NULL, command_thread, "command thread\n");
-    if (retcode != 0) {
-        fprintf(stderr, "Falied create command thread\n");
-        exit(EXIT_FAILURE);
-    }
-
+    assert(retcode == 0);
     retcode = pthread_create(&sensor_thread_tid, NULL, sensor_thread, "sensor thread\n");
-    if (retcode != 0) {
-        fprintf(stderr, "Falied create sensor thread\n");
-        exit(EXIT_FAILURE);
-    }
+    assert(retcode == 0);
 
     while (1) {
         sleep(1);
