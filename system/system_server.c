@@ -103,7 +103,10 @@ void *camera_service_thread(void* arg)
 
 void signal_exit(void)
 {
+    pthread_mutex_lock(&system_loop_mutex);
     system_loop_exit = true;
+    pthread_cond_broadcast(&system_loop_cond);
+    pthread_mutex_unlock(&system_loop_mutex);
 }
 
 int system_server()
@@ -132,11 +135,15 @@ int system_server()
     printf("system init done.  waiting...");
 
 
+    pthread_mutex_lock(&system_loop_mutex);
     while (system_loop_exit == false) {
-        sleep(1);
+        pthread_cond_wait(&system_loop_cond, &system_loop_mutex);
     }
+    pthread_mutex_unlock(&system_loop_mutex);
 
-    while (1) {
+    printf("<== system\n");
+
+    while (system_loop_exit == false) {
         sleep(1);
     }
 
