@@ -75,11 +75,21 @@ void *monitor_thread(void* arg)
 void *disk_service_thread(void* arg)
 {
     char *s = arg;
+    char buf[BUFSIZ];
+    FILE* file;
+    char cmd[]="df -h ./";
 
     printf("%s", s);
 
     while (1) {
-        posix_sleep_ms(5000);
+        file = popen(cmd, "r");
+        while(fgets(buf, BUFSIZ, file)
+        {
+            printf("%s", buf);
+        })
+        pclose(file);
+
+        posix_sleep_ms(10000);
     }
 
     return 0;
