@@ -1,24 +1,37 @@
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <semaphore.h>
 #include <sys/prctl.h>
 #include <signal.h>
 #include <sys/time.h>
 #include <time.h>
+#include <mqueue.h>
 
 #include <system_server.h>
 #include <gui.h>
 #include <input.h>
 #include <web_server.h>
 #include <camera_HAL.h>
+#include <toy_message.h>
+
+#define CAMERA_TAKE_PICTURE 1
+
+void signal_exit(void);
 
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
 bool            system_loop_exit = false; 
 
-static int timer = 0;
+static mqd_t watchdog_queue;
+static mqd_t monitor_queue;
+static mqd_t disk_queue;
+static mqd_t camera_queue;
 
-void signal_exit(void);
+static int timer = 0;
+pthread_mutex_t toy_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static sem_t global_timer_sem;
+static bool global_timer_stopped;
 
 static void timer_expire_signal_handler()
 {
@@ -49,11 +62,19 @@ int posix_sleep_ms(unsigned int timeout_ms)
 void *watchdog_thread(void* arg)
 {
     char *s = arg;
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
     while (1) {
-        posix_sleep_ms(5000);
+        mqretcode = mq_receive(watchdog_queue, (char*)&msg, sizeof(msg), 0);
+        if(mqretcode >= 0){
+            printf("watchdog_thread: message received\n");
+            printf("msg_type: %d\n", msg.msg_type);
+            printf("param1: %d\n", msg.param1);
+            printf("param2: %d\n", msg.param2);
+        }
     }
 
     return 0;
@@ -62,11 +83,19 @@ void *watchdog_thread(void* arg)
 void *monitor_thread(void* arg)
 {
     char *s = arg;
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
     while (1) {
-        posix_sleep_ms(5000);
+        mqretcode = mq_receive(monitor_queue, (char*)&msg, sizeof(msg), 0);
+        if(mqretcode >= 0){
+            printf("monitor_thread: message received\n");
+            printf("msg_type: %d\n", msg.msg_type);
+            printf("param1: %d\n", msg.param1);
+            printf("param2: %d\n", msg.param2);
+        }
     }
 
     return 0;
@@ -76,20 +105,21 @@ void *disk_service_thread(void* arg)
 {
     char *s = arg;
     char buf[BUFSIZ];
-    FILE* file;
+    FILE* fp;
     char cmd[]="df -h ./";
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
     while (1) {
-        file = popen(cmd, "r");
-        while(fgets(buf, BUFSIZ, file)
-        {
-            printf("%s", buf);
-        })
-        pclose(file);
-
-        posix_sleep_ms(10000);
+        mqretcode = mq_receive(disk_queue, (char*)&msg, sizeof(msg), 0);
+        if(mqretcode >= 0){
+            printf("disk_service_thread: message received\n");
+            printf("msg_type: %d\n", msg.msg_type);
+            printf("param1: %d\n", msg.param1);
+            printf("param2: %d\n", msg.param2);
+        }
     }
 
     return 0;
@@ -98,14 +128,23 @@ void *disk_service_thread(void* arg)
 void *camera_service_thread(void* arg)
 {
     char *s = arg;
+    int mqretcode;
+    toy_msg_t msg;
 
     printf("%s", s);
 
    toy_camera_open();
-   toy_camera_take_picture();
 
     while (1) {
-        posix_sleep_ms(5000);
+        mqretcode = (int)mq_receive(camera_queue, (void *)&msg, sizeof(toy_msg_t), 0);
+        assert(mqretcode >= 0);
+        printf("camera_service_thread: 메시지가 도착했습니다.\n");
+        printf("msg.type: %d\n", msg.msg_type);
+        printf("msg.param1: %d\n", msg.param1);
+        printf("msg.param2: %d\n", msg.param2);
+        if (msg.msg_type == CAMERA_TAKE_PICTURE) {
+            toy_camera_take_picture();
+        }
     }
 
     return 0;
@@ -130,8 +169,14 @@ int system_server()
 
     printf("나 system_server 프로세스!\n");
 
-    signal(SIGALRM, timer_expire_signal_handler);
-    set_periodic_timer(10, 0);
+    watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
+    assert(watchdog_queue != -1);
+    monitor_queue = mq_open("/monitor_queue", O_RDWR);
+    assert(monitor_queue != -1);
+    disk_queue = mq_open("/disk_queue", O_RDWR);
+    assert(disk_queue != -1);
+    camera_queue = mq_open("/camera_queue", O_RDWR);
+    assert(camera_queue != -1);
 
     retcode = pthread_create(&watchdog_thread_tid, NULL, watchdog_thread, "watchdog thread\n");
     assert(retcode == 0);

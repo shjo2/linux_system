@@ -10,12 +10,14 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <mqueue.h>
 
 #include <system_server.h>
 #include <gui.h>
 #include <input.h>
 #include <web_server.h>
 #include <execinfo.h>
+#include <toy_message.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
@@ -31,6 +33,11 @@ typedef struct _sig_ucontext {
 
 static pthread_mutex_t global_message_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static char global_message[TOY_BUFFSIZE];
+
+static mqd_t watchdog_queue;
+static mqd_t monitor_queue;
+static mqd_t disk_queue;
+static mqd_t camera_queue;
 
 void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   void * array[50];
@@ -52,6 +59,7 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
     printf("signal %d (%s)\n", sig_num, strsignal(sig_num));
 
   size = backtrace(array, 50);
+
   array[1] = caller_address;
   messages = backtrace_symbols(array, size);
 
@@ -63,7 +71,6 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
 
   exit(EXIT_FAILURE);
 }
-
 
 void *sensor_thread(void* arg)
 {
@@ -78,16 +85,17 @@ void *sensor_thread(void* arg)
     return 0;
 }
 
-
 int toy_send(char **args);
 int toy_mutex(char **args);
 int toy_shell(char **args);
+int toy_message_queue(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
     "send",
     "mu",
     "sh",
+    "mq",
     "exit"
 };
 
@@ -95,6 +103,7 @@ int (*builtin_func[]) (char **) = {
     &toy_send,
     &toy_mutex,
     &toy_shell,
+    &toy_message_queue,
     &toy_exit
 };
 
@@ -120,6 +129,26 @@ int toy_mutex(char **args)
     pthread_mutex_lock(&global_message_mutex);
     strcpy(global_message, args[1]);
     pthread_mutex_unlock(&global_message_mutex);
+    return 1;
+}
+
+int toy_message_queue(char **args)
+{
+    int mqretcode;
+    toy_msg_t msg;
+
+    if (args[1] == NULL || args[2] == NULL) {
+        return 1;
+    }
+
+    if (!strcmp(args[1], "camera")) {
+        msg.msg_type = atoi(args[2]);
+        msg.param1 = 0;
+        msg.param2 = 0;
+        mqretcode = mq_send(camera_queue, (char *)&msg, sizeof(msg), 0);
+        assert(mqretcode == 0);
+    }
+
     return 1;
 }
 
@@ -243,53 +272,12 @@ void *command_thread(void* arg)
     return 0;
 }
 
-#define MAX 30
-#define NUMTHREAD 3 
-
-char buffer[TOY_BUFFSIZE];
-int read_count = 0, write_count = 0;
-int buflen;
-pthread_mutex_t count_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t empty = PTHREAD_COND_INITIALIZER;
-int thread_id[NUMTHREAD] = {0, 1, 2};
-int producer_count = 0, consumer_count = 0;
-
-void *toy_consumer(int *id)
-{
-    pthread_mutex_lock(&count_mutex);
-    while (consumer_count < MAX) {
-        pthread_cond_wait(&empty, &count_mutex);
-        printf("                           소비자[%d]: %c\n", *id, buffer[read_count]);
-        read_count = (read_count + 1) % TOY_BUFFSIZE;
-        fflush(stdout);
-        consumer_count++;
-    }
-    pthread_mutex_unlock(&count_mutex);
-}
-
-void *toy_producer(int *id)
-{
-    while (producer_count < MAX) {
-        pthread_mutex_lock(&count_mutex);
-        strcpy(buffer, "");
-        buffer[write_count] = global_message[write_count % buflen];
-        printf("%d - 생산자[%d]: %c \n", producer_count, *id, buffer[write_count]);
-        fflush(stdout);
-        write_count = (write_count + 1) % TOY_BUFFSIZE;
-        producer_count++;
-        pthread_cond_signal(&empty);
-        pthread_mutex_unlock(&count_mutex);
-        sleep(rand() % 3);
-    }
-}
-
 int input()
 {
     int retcode;
     struct sigaction sa;
     pthread_t command_thread_tid, sensor_thread_tid;
     int i;
-    pthread_t thread[NUMTHREAD];
 
     printf("나 input 프로세스!\n");
 
@@ -299,23 +287,21 @@ int input()
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sa.sa_sigaction = segfault_handler;
 
-    sigaction(SIGSEGV, &sa, NULL); 
+    sigaction(SIGSEGV, &sa, NULL);
+
+    watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
+    assert(watchdog_queue != -1);
+    monitor_queue = mq_open("/monitor_queue", O_RDWR);
+    assert(monitor_queue != -1);
+    disk_queue = mq_open("/disk_queue", O_RDWR);
+    assert(disk_queue != -1);
+    camera_queue = mq_open("/camera_queue", O_RDWR);
+    assert(camera_queue != -1);
+
     retcode = pthread_create(&command_thread_tid, NULL, command_thread, "command thread\n");
     assert(retcode == 0);
     retcode = pthread_create(&sensor_thread_tid, NULL, sensor_thread, "sensor thread\n");
     assert(retcode == 0);
-
-    pthread_mutex_lock(&global_message_mutex);
-    strcpy(global_message, "hello world!");
-    buflen = strlen(global_message);
-    pthread_mutex_unlock(&global_message_mutex);
-    pthread_create(&thread[0], NULL, (void *)toy_consumer, &thread_id[0]);
-    pthread_create(&thread[1], NULL, (void *)toy_producer, &thread_id[1]);
-    pthread_create(&thread[2], NULL, (void *)toy_producer, &thread_id[2]);
-
-    for (i = 0; i < NUMTHREAD; i++) {
-        pthread_join(thread[i], NULL);
-    }
 
     while (1) {
         sleep(1);
