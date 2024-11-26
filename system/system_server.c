@@ -29,14 +29,40 @@ static mqd_t disk_queue;
 static mqd_t camera_queue;
 
 static int timer = 0;
-pthread_mutex_t toy_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static sem_t global_timer_sem;
 static bool global_timer_stopped;
 
 static void timer_expire_signal_handler()
 {
+    sem_post(&global_timer_sem);
+}
+
+static void system_timeout_handler()
+{
+    pthread_mutex_lock(&timer_mutex);
     timer++;
-    signal_exit();
+    printf("timer: %d\n", timer);
+    pthread_mutex_unlock(&timer_mutex);
+}
+
+static void *timer_thread(void *not_used)
+{
+    signal(SIGALRM, timer_expire_signal_handler);
+    set_periodic_timer(1, 1);
+
+    while(!global_timer_stopped){
+        int rc = sem_wait(&global_timer_sem);
+        if(rc == -1 && errno == EINTR)
+            continue;
+        
+        if(rc == -1){
+            perror("sem_wait");
+            exit(-1);
+        }
+
+        system_timeout_handler();
+    }
 }
 
 void set_periodic_timer(long sec_delay, long usec_delay)
@@ -165,7 +191,7 @@ int system_server()
     struct sigevent   sev;
     timer_t *tidlist;
     int retcode;
-    pthread_t watchdog_thread_tid, monitor_thread_tid, disk_service_thread_tid, camera_service_thread_tid;
+    pthread_t watchdog_thread_tid, monitor_thread_tid, disk_service_thread_tid, camera_service_thread_tid, timer_thread_tid;
 
     printf("나 system_server 프로세스!\n");
 
@@ -185,6 +211,8 @@ int system_server()
     retcode = pthread_create(&disk_service_thread_tid, NULL, disk_service_thread, "disk service thread\n");
     assert(retcode == 0);
     retcode = pthread_create(&camera_service_thread_tid, NULL, camera_service_thread, "camera service thread\n");
+    assert(retcode == 0);
+    retcode = pthread_create(&timer_thread_tid, NULL, timer_thread, "timer thread\n");
     assert(retcode == 0);
 
     printf("system init done.  waiting...");
