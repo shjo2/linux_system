@@ -11,6 +11,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <mqueue.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -18,6 +23,7 @@
 #include <web_server.h>
 #include <execinfo.h>
 #include <toy_message.h>
+#include <shared_memory.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
@@ -38,6 +44,12 @@ static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
 static mqd_t disk_queue;
 static mqd_t camera_queue;
+
+static shm_sensor_t *the_sensor_info = NULL;
+int shmid;
+struct shmseg *shmp;
+
+int posix_sleep_ms(unsigned int timeout_ms);
 
 void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   void * array[50];
@@ -75,14 +87,26 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
 void *sensor_thread(void* arg)
 {
     char *s = arg;
+    toy_msg_t msg;
+    int mqretcode;
 
     printf("%s", s);
 
-    while (1) {
-        posix_sleep_ms(5000);
-    }
+    the_sensor_info->temp = 1;
+    the_sensor_info->press = 2;
+    the_sensor_info->humidity = 4;
 
-    return 0;
+    while (1) {
+        sleep(5);
+        posix_sleep_ms(5);
+
+        msg.msg_type = 1;
+        msg.param1 = shmid;
+        msg.param2 = 0;
+
+        mqretcode = mq_send(monitor_queue, (char *)&msg, sizeof(msg), 0);
+        assert(mqretcode == 0);
+    }
 }
 
 int toy_send(char **args);
@@ -288,6 +312,18 @@ int input()
     sa.sa_sigaction = segfault_handler;
 
     sigaction(SIGSEGV, &sa, NULL);
+
+        shmid = shmget(SHM_KEY_SENSOR, sizeof(shm_sensor_t), IPC_CREAT | 0777);
+    if (shmid < 0) {
+        perror("shmget failed");
+        exit(EXIT_FAILURE);
+    }
+
+    the_sensor_info = (shm_sensor_t *)shmat(shmid, NULL, 0);
+    if (the_sensor_info == (void *)-1) {
+        perror("shmat failed");
+        exit(EXIT_FAILURE);
+    }
 
     watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
     assert(watchdog_queue != -1);

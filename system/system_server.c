@@ -14,8 +14,10 @@
 #include <web_server.h>
 #include <camera_HAL.h>
 #include <toy_message.h>
+#include <shared_memory.h>
 
 #define CAMERA_TAKE_PICTURE 1
+#define SENSOR_DATA 1
 
 void signal_exit(void);
 
@@ -27,6 +29,11 @@ static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
 static mqd_t disk_queue;
 static mqd_t camera_queue;
+
+static shm_sensor_t *the_sensor_info = NULL;
+void set_periodic_timer(long sec_delay, long usec_delay);
+void *toy_shm_attach(int shmid);
+int toy_shm_detach(void *ptr);
 
 static int timer = 0;
 pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -112,15 +119,25 @@ void *monitor_thread(void* arg)
     int mqretcode;
     toy_msg_t msg;
 
+    int shmid;
+    struct shmesg *shmp;
+
     printf("%s", s);
 
     while (1) {
-        mqretcode = mq_receive(monitor_queue, (char*)&msg, sizeof(msg), 0);
-        if(mqretcode >= 0){
-            printf("monitor_thread: message received\n");
-            printf("msg_type: %d\n", msg.msg_type);
-            printf("param1: %d\n", msg.param1);
-            printf("param2: %d\n", msg.param2);
+        mqretcode = (int)mq_receive(monitor_queue, (void *)&msg, sizeof(toy_msg_t), 0);
+        assert(mqretcode >= 0);
+        printf("monitor_thread: 메시지가 도착했습니다.\n");
+        printf("msg.type: %d\n", msg.msg_type);
+        printf("msg.param1: %d\n", msg.param1);
+        printf("msg.param2: %d\n", msg.param2);
+        if (msg.msg_type == SENSOR_DATA) {
+            shmid = msg.param1;
+            the_sensor_info = toy_shm_attach(shmid);
+            printf("sensor temp: %d\n", the_sensor_info->temp);
+            printf("sensor info: %d\n", the_sensor_info->press);
+            printf("sensor humidity: %d\n", the_sensor_info->humidity);
+            toy_shm_detach(the_sensor_info);
         }
     }
 
