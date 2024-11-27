@@ -113,6 +113,7 @@ int toy_send(char **args);
 int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_message_queue(char **args);
+int toy_read_elf_header(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
@@ -120,6 +121,7 @@ char *builtin_str[] = {
     "mu",
     "sh",
     "mq",
+    "elf",
     "exit"
 };
 
@@ -128,6 +130,7 @@ int (*builtin_func[]) (char **) = {
     &toy_mutex,
     &toy_shell,
     &toy_message_queue,
+    &toy_read_elf_header,
     &toy_exit
 };
 
@@ -174,6 +177,36 @@ int toy_message_queue(char **args)
     }
 
     return 1;
+}
+
+int toy_read_elf_header(char **args)
+{
+    int mqretcode;
+    toy_msg_t msg;
+    int in_fd;
+    char *contents = NULL;
+    size_t contents_sz;
+    struct stat st;
+    Elf64Hdr *map;
+
+    in_fd = open("./sample/sample.elf", O_RDONLY);
+	if ( in_fd < 0 ) {
+        printf("cannot open ./sample/sample.elf\n");
+        return 1;
+    }
+    if(fstat(in_fd, &st) < 0){
+        perror("fstat");
+        exit(1);
+    }
+
+    map = (Elf64Hdr*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, in_fd, 0);
+    printf("read size: %ld\n", st.st_size);
+    printf("Object file type: %d\n", map->e_type);
+    printf("Architecture: %d\n", map->e_machine);
+    printf("Object file version: %d\n", map->e_version);
+    printf("Entry point virtual address: %ld\n", map->e_entry);
+    printf("Program header table file offset: %d", map->e_type);
+    munmap(map, st.st_size);
 }
 
 int toy_exit(char **args)
