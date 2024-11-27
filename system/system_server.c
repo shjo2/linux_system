@@ -7,6 +7,16 @@
 #include <sys/time.h>
 #include <time.h>
 #include <mqueue.h>
+#include <sys/inotify.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <sys/sysmacros.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <stdint.h>
+#include <string.h>
+#include <dirent.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -18,6 +28,8 @@
 
 #define CAMERA_TAKE_PICTURE 1
 #define SENSOR_DATA 1
+#define BUF_LEN 1024
+#define TOY_TEST_FS "./fs"
 
 void signal_exit(void);
 
@@ -144,25 +156,84 @@ void *monitor_thread(void* arg)
     return 0;
 }
 
+int get_dir_capacity(char *dirname){
+    struct dirent* dent;
+    struct stat st;
+    DIR *dir;
+    int total_size = 0;
+    int fsize = 0;
+    char path[1024];
+
+    if((dir=opendir(dirname)) == NULL){
+        perror("opendir error");
+        exit(1);
+    }
+
+    while((dent = readdir(dir)) != NULL){
+        if((strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0))
+            continue;
+        
+        sprintf(path, "%s/%s", dirname, dent->d_name);
+        if(lstat(path, &st) != 0)
+            continue;
+        fsize = st.st_size;
+
+        if(S_ISDIR(st.st_mode)){
+            int dirsize = get_dir_capacity(path) + fsize;
+            total_size += dirsize;
+        }else{
+            total_size += fsize;
+        }
+    }
+
+    return total_size;
+}
+
 void *disk_service_thread(void* arg)
 {
     char *s = arg;
-    char buf[BUFSIZ];
-    FILE* fp;
-    char cmd[]="df -h ./";
-    int mqretcode;
-    toy_msg_t msg;
+    int inotifyFd, wd, j;
+    char buf[BUF_LEN] __attribute__ ((aligned(8)));
+    ssize_t numRead;
+    char *p;
+    struct inotify_event *event;
+    char *directory = TOY_TEST_FS;
+    int total_size;
 
     printf("%s", s);
 
+    if ((inotifyFd=inotify_init()) == -1) {
+        perror("inotify_init error");
+        exit(1);
+    }
+
+    if (inotify_add_watch(inotifyFd, TOY_TEST_FS, IN_CREATE) == -1) {
+        perror("inotify_add_watch error");
+        exit(1);
+    }
+
     while (1) {
-        mqretcode = mq_receive(disk_queue, (char*)&msg, sizeof(msg), 0);
-        if(mqretcode >= 0){
-            printf("disk_service_thread: message received\n");
-            printf("msg_type: %d\n", msg.msg_type);
-            printf("param1: %d\n", msg.param1);
-            printf("param2: %d\n", msg.param2);
+        numRead = read(inotifyFd, buf, BUF_LEN);
+        printf("num_read: %ld bytes\n", (long)numRead);
+        if(numRead == 0){
+            printf("read() from inotify fd returned 0!\n");
+            return 0;
         }
+
+        if(numRead == -1) {
+            perror("read error");
+            exit(1);
+        }
+
+        printf("Read %ld bytes from inotify fd\n", (long)numRead);
+
+        for(p = buf; p < buf + numRead;) {
+            event = (struct inotify_event *)p;
+            p += sizeof(struct inotify_event) + event->len;
+        }
+
+        total_size = get_dir_capacity(TOY_TEST_FS);
+        printf("Directory size: %d\n", total_size);
     }
 
     return 0;
