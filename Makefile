@@ -5,17 +5,17 @@ UI = ./ui
 WEB_SERVER = ./web_server
 HAL = ./hal
 
-INCLUDES = -I$(SYSTEM) -I$(UI) -I$(WEB_SERVER) -I$(HAL)
+INCLUDES = -I$(SYSTEM) -I$(UI) -I$(WEB_SERVER) -I$(HAL) -I./
 
 CC = gcc
-CXXLIBS = -lpthread -lm -lrt
+CXXLIBS = -lpthread -lm -lrt -Wl,--no-as-needed -ldl
 CXXFLAGS = $(INCLUDEDIRS) -g -O0 -std=c++14
 CXX = g++
 
-objects = main.o system_server.o web_server.o input.o gui.o
+objects = main.o system_server.o web_server.o input.o gui.o shared_memory.o dump_state.o
 cxx_objects = camera_HAL.o ControlThread.o
 
-$(TARGET): $(objects) $(cxx_objects)
+$(TARGET): $(objects) $(cxx_objects) $(shared_libs)
 	$(CXX) -o $(TARGET) $(objects) $(cxx_objects) $(CXXLIBS)
 
 main.o:  main.c
@@ -23,6 +23,12 @@ main.o:  main.c
 
 system_server.o: $(SYSTEM)/system_server.h $(SYSTEM)/system_server.c
 	$(CC) -g $(INCLUDES) -c ./system/system_server.c
+
+dump_state.o: $(SYSTEM)/dump_state.h $(SYSTEM)/dump_state.c
+	$(CC) -g $(INCLUDES) -c ./system/dump_state.c
+
+shared_memory.o: $(SYSTEM)/shared_memory.h $(SYSTEM)/shared_memory.c
+	$(CC) -g $(INCLUDES) -c ./system/shared_memory.c
 
 gui.o: $(UI)/gui.h $(UI)/gui.c
 	$(CC) -g $(INCLUDES) -c $(UI)/gui.c

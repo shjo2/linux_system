@@ -14,8 +14,6 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -24,10 +22,12 @@
 #include <execinfo.h>
 #include <toy_message.h>
 #include <shared_memory.h>
+#include <dump_state.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
 #define TOY_BUFFSIZE 1024
+#define DUMP_STATE 2
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -44,8 +44,8 @@ static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
 static mqd_t disk_queue;
 static mqd_t camera_queue;
-
 static shm_sensor_t *the_sensor_info = NULL;
+
 int shmid;
 struct shmseg *shmp;
 
@@ -114,6 +114,7 @@ int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_message_queue(char **args);
 int toy_read_elf_header(char **args);
+int toy_dump_state(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
@@ -122,6 +123,7 @@ char *builtin_str[] = {
     "sh",
     "mq",
     "elf",
+    "dump",
     "exit"
 };
 
@@ -131,6 +133,7 @@ int (*builtin_func[]) (char **) = {
     &toy_shell,
     &toy_message_queue,
     &toy_read_elf_header,
+    &toy_dump_state,
     &toy_exit
 };
 
@@ -207,6 +210,22 @@ int toy_read_elf_header(char **args)
     printf("Entry point virtual address: %ld\n", map->e_entry);
     printf("Program header table file offset: %d", map->e_type);
     munmap(map, st.st_size);
+}
+
+int toy_dump_state(char **args)
+{
+    int mqretcode;
+    toy_msg_t msg;
+
+    msg.msg_type = DUMP_STATE;
+    msg.param1 = 0;
+    msg.param2 = 0;
+    mqretcode = mq_send(camera_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+    mqretcode = mq_send(monitor_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+
+    return 1;
 }
 
 int toy_exit(char **args)
@@ -346,16 +365,10 @@ int input()
 
     sigaction(SIGSEGV, &sa, NULL);
 
-        shmid = shmget(SHM_KEY_SENSOR, sizeof(shm_sensor_t), IPC_CREAT | 0777);
-    if (shmid < 0) {
-        perror("shmget failed");
-        exit(EXIT_FAILURE);
-    }
-
-    the_sensor_info = (shm_sensor_t *)shmat(shmid, NULL, 0);
-    if (the_sensor_info == (void *)-1) {
-        perror("shmat failed");
-        exit(EXIT_FAILURE);
+    the_sensor_info = (shm_sensor_t *)toy_shm_create(SHM_KEY_SENSOR, sizeof(shm_sensor_t));
+    if ( the_sensor_info == (void *)-1 ) {
+        the_sensor_info = NULL;
+        printf("Error in shm_create SHMID=%d SHM_KEY_SENSOR\n", SHM_KEY_SENSOR);
     }
 
     watchdog_queue = mq_open("/watchdog_queue", O_RDWR);

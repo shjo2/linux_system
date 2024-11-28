@@ -22,35 +22,32 @@
 #include <gui.h>
 #include <input.h>
 #include <web_server.h>
-#include <camera_HAL.h>
 #include <toy_message.h>
 #include <shared_memory.h>
+#include <dump_state.h>
 
-#define CAMERA_TAKE_PICTURE 1
-#define SENSOR_DATA 1
 #define BUF_LEN 1024
 #define TOY_TEST_FS "./fs"
 
-void signal_exit(void);
-
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
-bool            system_loop_exit = false; 
+bool            system_loop_exit = false;    ///< true if main loop should exit
 
 static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
 static mqd_t disk_queue;
 static mqd_t camera_queue;
 
-static shm_sensor_t *the_sensor_info = NULL;
-void set_periodic_timer(long sec_delay, long usec_delay);
-void *toy_shm_attach(int shmid);
-int toy_shm_detach(void *ptr);
-
-static int timer = 0;
-pthread_mutex_t timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int toy_timer = 0;
+pthread_mutex_t toy_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
 static sem_t global_timer_sem;
 static bool global_timer_stopped;
+
+static shm_sensor_t *the_sensor_info = NULL;
+void set_periodic_timer(long sec_delay, long usec_delay);
+int toy_camera_open();
+int toy_camera_take_picture();
+int toy_camera_dump();
 
 static void timer_expire_signal_handler()
 {
@@ -59,10 +56,9 @@ static void timer_expire_signal_handler()
 
 static void system_timeout_handler()
 {
-    pthread_mutex_lock(&timer_mutex);
-    timer++;
-    printf("timer: %d\n", timer);
-    pthread_mutex_unlock(&timer_mutex);
+    pthread_mutex_lock(&toy_timer_mutex);
+    toy_timer++;
+    pthread_mutex_unlock(&toy_timer_mutex);
 }
 
 static void *timer_thread(void *not_used)
@@ -70,18 +66,19 @@ static void *timer_thread(void *not_used)
     signal(SIGALRM, timer_expire_signal_handler);
     set_periodic_timer(1, 1);
 
-    while(!global_timer_stopped){
-        int rc = sem_wait(&global_timer_sem);
-        if(rc == -1 && errno == EINTR)
-            continue;
-        
-        if(rc == -1){
-            perror("sem_wait");
-            exit(-1);
-        }
+	while (!global_timer_stopped) {
+		int rc = sem_wait(&global_timer_sem);
+		if (rc == -1 && errno == EINTR) {
+		    continue;
+		}
 
-        system_timeout_handler();
-    }
+		if (rc == -1) {
+		    perror("sem_wait");
+		    exit(-1);
+		}
+		system_timeout_handler();
+	}
+	return 0;
 }
 
 void set_periodic_timer(long sec_delay, long usec_delay)
@@ -113,26 +110,26 @@ void *watchdog_thread(void* arg)
     printf("%s", s);
 
     while (1) {
-        mqretcode = mq_receive(watchdog_queue, (char*)&msg, sizeof(msg), 0);
-        if(mqretcode >= 0){
-            printf("watchdog_thread: message received\n");
-            printf("msg_type: %d\n", msg.msg_type);
-            printf("param1: %d\n", msg.param1);
-            printf("param2: %d\n", msg.param2);
-        }
+        mqretcode = (int)mq_receive(watchdog_queue, (void *)&msg, sizeof(toy_msg_t), 0);
+        assert(mqretcode >= 0);
+        printf("watchdog_thread: 메시지가 도착했습니다.\n");
+        printf("msg.type: %d\n", msg.msg_type);
+        printf("msg.param1: %d\n", msg.param1);
+        printf("msg.param2: %d\n", msg.param2);
     }
 
     return 0;
 }
+
+#define SENSOR_DATA 1
+#define DUMP_STATE 2
 
 void *monitor_thread(void* arg)
 {
     char *s = arg;
     int mqretcode;
     toy_msg_t msg;
-
     int shmid;
-    struct shmesg *shmp;
 
     printf("%s", s);
 
@@ -150,44 +147,47 @@ void *monitor_thread(void* arg)
             printf("sensor info: %d\n", the_sensor_info->press);
             printf("sensor humidity: %d\n", the_sensor_info->humidity);
             toy_shm_detach(the_sensor_info);
+        } else if (msg.msg_type == DUMP_STATE) {
+            dumpstate();
+        } else {
+            printf("monitor_thread: unknown message. xxx\n");
         }
     }
 
     return 0;
 }
 
-int get_dir_capacity(char *dirname){
-    struct dirent* dent;
+static long get_directory_size(char *dirname)
+{
+    DIR *dir = opendir(dirname);
+    if (dir == 0)
+        return 0;
+
+    struct dirent *dit;
     struct stat st;
-    DIR *dir;
-    int total_size = 0;
-    int fsize = 0;
-    char path[1024];
+    long size = 0;
+    long total_size = 0;
+    char filePath[1024];
 
-    if((dir=opendir(dirname)) == NULL){
-        perror("opendir error");
-        exit(1);
-    }
-
-    while((dent = readdir(dir)) != NULL){
-        if((strcmp(dent->d_name, ".") == 0 || strcmp(dent->d_name, "..") == 0))
+    while ((dit = readdir(dir)) != NULL) {
+        if ( (strcmp(dit->d_name, ".") == 0) || (strcmp(dit->d_name, "..") == 0) )
             continue;
-        
-        sprintf(path, "%s/%s", dirname, dent->d_name);
-        if(lstat(path, &st) != 0)
-            continue;
-        fsize = st.st_size;
 
-        if(S_ISDIR(st.st_mode)){
-            int dirsize = get_dir_capacity(path) + fsize;
-            total_size += dirsize;
-        }else{
-            total_size += fsize;
+        sprintf(filePath, "%s/%s", dirname, dit->d_name);
+        if (lstat(filePath, &st) != 0)
+            continue;
+        size = st.st_size;
+
+        if (S_ISDIR(st.st_mode)) {
+            long dir_size = get_directory_size(filePath) + size;
+            total_size += dir_size;
+        } else {
+            total_size += size;
         }
     }
-
     return total_size;
 }
+
 
 void *disk_service_thread(void* arg)
 {
@@ -202,42 +202,36 @@ void *disk_service_thread(void* arg)
 
     printf("%s", s);
 
-    if ((inotifyFd=inotify_init()) == -1) {
-        perror("inotify_init error");
-        exit(1);
-    }
+    inotifyFd = inotify_init();                 /* Create inotify instance */
+    if (inotifyFd == -1)
+        return 0;
 
-    if (inotify_add_watch(inotifyFd, TOY_TEST_FS, IN_CREATE) == -1) {
-        perror("inotify_add_watch error");
-        exit(1);
-    }
+    wd = inotify_add_watch(inotifyFd, TOY_TEST_FS, IN_CREATE);
+    if (wd == -1)
+        return 0;
 
-    while (1) {
+    for (;;) {                                  /* Read events forever */
         numRead = read(inotifyFd, buf, BUF_LEN);
-        printf("num_read: %ld bytes\n", (long)numRead);
-        if(numRead == 0){
-            printf("read() from inotify fd returned 0!\n");
+        if (numRead == 0) {
+            printf("read() from inotify fd returned 0!");
             return 0;
         }
 
-        if(numRead == -1) {
-            perror("read error");
-            exit(1);
-        }
+        if (numRead == -1)
+            return 0;
 
-        printf("Read %ld bytes from inotify fd\n", (long)numRead);
-
-        for(p = buf; p < buf + numRead;) {
-            event = (struct inotify_event *)p;
+        for (p = buf; p < buf + numRead; ) {
+            event = (struct inotify_event *) p;
             p += sizeof(struct inotify_event) + event->len;
         }
-
-        total_size = get_dir_capacity(TOY_TEST_FS);
-        printf("Directory size: %d\n", total_size);
+        total_size = get_directory_size(TOY_TEST_FS);
+        printf("directory size: %d\n", total_size);
     }
 
     return 0;
 }
+
+#define CAMERA_TAKE_PICTURE 1
 
 void *camera_service_thread(void* arg)
 {
@@ -247,7 +241,7 @@ void *camera_service_thread(void* arg)
 
     printf("%s", s);
 
-   toy_camera_open();
+    toy_camera_open();
 
     while (1) {
         mqretcode = (int)mq_receive(camera_queue, (void *)&msg, sizeof(toy_msg_t), 0);
@@ -258,6 +252,10 @@ void *camera_service_thread(void* arg)
         printf("msg.param2: %d\n", msg.param2);
         if (msg.msg_type == CAMERA_TAKE_PICTURE) {
             toy_camera_take_picture();
+        } else if (msg.msg_type == DUMP_STATE) {
+            toy_camera_dump();
+        } else {
+            printf("camera_service_thread: unknown message. xxx\n");
         }
     }
 
@@ -279,7 +277,8 @@ int system_server()
     struct sigevent   sev;
     timer_t *tidlist;
     int retcode;
-    pthread_t watchdog_thread_tid, monitor_thread_tid, disk_service_thread_tid, camera_service_thread_tid, timer_thread_tid;
+    pthread_t watchdog_thread_tid, monitor_thread_tid, disk_service_thread_tid, camera_service_thread_tid;
+    pthread_t timer_thread_tid;
 
     printf("나 system_server 프로세스!\n");
 
@@ -305,7 +304,6 @@ int system_server()
 
     printf("system init done.  waiting...");
 
-
     pthread_mutex_lock(&system_loop_mutex);
     while (system_loop_exit == false) {
         pthread_cond_wait(&system_loop_cond, &system_loop_mutex);
@@ -314,7 +312,7 @@ int system_server()
 
     printf("<== system\n");
 
-    while (system_loop_exit == false) {
+    while (1) {
         sleep(1);
     }
 
