@@ -25,13 +25,14 @@
 #include <toy_message.h>
 #include <shared_memory.h>
 #include <dump_state.h>
+#include <hardware.h>
 
 #define BUF_LEN 1024
 #define TOY_TEST_FS "./fs"
 
 pthread_mutex_t system_loop_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t  system_loop_cond  = PTHREAD_COND_INITIALIZER;
-bool            system_loop_exit = false;    ///< true if main loop should exit
+bool            system_loop_exit = false;
 
 static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
@@ -45,9 +46,9 @@ static bool global_timer_stopped;
 
 static shm_sensor_t *the_sensor_info = NULL;
 void set_periodic_timer(long sec_delay, long usec_delay);
-int toy_camera_open();
-int toy_camera_take_picture();
-int toy_camera_dump();
+//int toy_camera_open();
+//int toy_camera_take_picture();
+//int toy_camera_dump();
 
 static void timer_expire_signal_handler()
 {
@@ -238,10 +239,19 @@ void *camera_service_thread(void* arg)
     char *s = arg;
     int mqretcode;
     toy_msg_t msg;
+    hw_module_t *module = NULL;
+    int res;
+    const char *libpath = "./libcamera.so";
 
     printf("%s", s);
 
-    toy_camera_open();
+    //res = hw_get_camera_module((const hw_module_t **)&module, libpath);
+    res = hw_get_camera_module((const hw_module_t **)&module, HAL_LIBRARY_PATH1);
+    assert(res == 0);
+    printf("Camera module name: %s\n", module->name);
+    printf("Camera module tag: %d\n", module->tag);
+    printf("Camera module id: %s\n", module->id);
+    module->open();
 
     while (1) {
         mqretcode = (int)mq_receive(camera_queue, (void *)&msg, sizeof(toy_msg_t), 0);
@@ -251,9 +261,9 @@ void *camera_service_thread(void* arg)
         printf("msg.param1: %d\n", msg.param1);
         printf("msg.param2: %d\n", msg.param2);
         if (msg.msg_type == CAMERA_TAKE_PICTURE) {
-            toy_camera_take_picture();
+            module->take_picture();
         } else if (msg.msg_type == DUMP_STATE) {
-            toy_camera_dump();
+            module->dump();
         } else {
             printf("camera_service_thread: unknown message. xxx\n");
         }
