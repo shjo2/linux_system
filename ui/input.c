@@ -25,6 +25,11 @@
 #include <toy_message.h>
 #include <shared_memory.h>
 #include <dump_state.h>
+<<<<<<< HEAD
+=======
+
+int toy_mincore(char **args);
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
@@ -112,7 +117,11 @@ int toy_shell(char **args);
 int toy_message_queue(char **args);
 int toy_read_elf_header(char **args);
 int toy_dump_state(char **args);
+<<<<<<< HEAD
 int toy_busy(char **args);
+=======
+int toy_mincore(char **args);
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
 int toy_exit(char **args);
 
 char *builtin_str[] = {
@@ -122,7 +131,11 @@ char *builtin_str[] = {
     "mq",
     "elf",
     "dump",
+<<<<<<< HEAD
     "busy",
+=======
+    "mincore",
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
     "exit"
 };
 
@@ -133,7 +146,11 @@ int (*builtin_func[]) (char **) = {
     &toy_message_queue,
     &toy_read_elf_header,
     &toy_dump_state,
+<<<<<<< HEAD
     &toy_busy,
+=======
+    &toy_mincore,
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
     &toy_exit
 };
 
@@ -244,6 +261,7 @@ int toy_mincore(char **args)
     assert(res == 0);
 
     return 1;
+<<<<<<< HEAD
 }
 
 int toy_busy(char **args)
@@ -251,6 +269,8 @@ int toy_busy(char **args)
     while(1)
         ;
     return 1;
+=======
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
 }
 
 int toy_exit(char **args)
@@ -379,6 +399,7 @@ int input()
     struct sigaction sa;
     pthread_t command_thread_tid, sensor_thread_tid;
     int i;
+    scmp_filter_ctx ctx;
 
     printf("나 input 프로세스!\n");
 
@@ -388,8 +409,35 @@ int input()
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sa.sa_sigaction = segfault_handler;
 
+<<<<<<< HEAD
     sigaction(SIGSEGV, &sa, NULL); 
 
+=======
+    sigaction(SIGSEGV, &sa, NULL); /* ignore whether it works or not */
+
+    ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (ctx == NULL) {
+        printf("seccomp_init failed");
+        return -1;
+    }
+
+    int rc = seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(mincore), 0);
+    if (rc < 0) {
+        printf("seccomp_rule_add failed");
+        return -1;
+    }
+
+    seccomp_export_pfc(ctx, 5);
+    seccomp_export_bpf(ctx, 6);
+
+    rc = seccomp_load(ctx);
+    if (rc < 0) {
+        printf("seccomp_load failed");
+        return -1;
+    }
+    seccomp_release(ctx);
+
+>>>>>>> e5b454fedc3634a50ae57c39136d43e8903e3259
     the_sensor_info = (shm_sensor_t *)toy_shm_create(SHM_KEY_SENSOR, sizeof(shm_sensor_t));
     if ( the_sensor_info == (void *)-1 ) {
         the_sensor_info = NULL;
@@ -409,7 +457,7 @@ int input()
     assert(retcode == 0);
     retcode = pthread_create(&sensor_thread_tid, NULL, sensor_thread, "sensor thread\n");
     assert(retcode == 0);
-
+ 
     while (1) {
         sleep(1);
     }
