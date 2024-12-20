@@ -14,8 +14,8 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
+#include <sys/mman.h>
+#include <seccomp.h>
 
 #include <system_server.h>
 #include <gui.h>
@@ -24,10 +24,12 @@
 #include <execinfo.h>
 #include <toy_message.h>
 #include <shared_memory.h>
+#include <dump_state.h>
 
 #define TOY_TOK_BUFSIZE 64
 #define TOY_TOK_DELIM " \t\r\n\a"
 #define TOY_BUFFSIZE 1024
+#define DUMP_STATE 2
 
 typedef struct _sig_ucontext {
     unsigned long uc_flags;
@@ -44,12 +46,7 @@ static mqd_t watchdog_queue;
 static mqd_t monitor_queue;
 static mqd_t disk_queue;
 static mqd_t camera_queue;
-
 static shm_sensor_t *the_sensor_info = NULL;
-int shmid;
-struct shmseg *shmp;
-
-int posix_sleep_ms(unsigned int timeout_ms);
 
 void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
   void * array[50];
@@ -60,7 +57,7 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
 
   uc = (sig_ucontext_t *) ucontext;
 
-  caller_address = (void *) uc->uc_mcontext.rip;
+  caller_address = (void *) uc->uc_mcontext.rip;  // RIP: x86_64 specific     arm_pc: ARM
 
   fprintf(stderr, "\n");
 
@@ -71,7 +68,6 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
     printf("signal %d (%s)\n", sig_num, strsignal(sig_num));
 
   size = backtrace(array, 50);
-
   array[1] = caller_address;
   messages = backtrace_symbols(array, size);
 
@@ -86,27 +82,30 @@ void segfault_handler(int sig_num, siginfo_t * info, void * ucontext) {
 
 void *sensor_thread(void* arg)
 {
+    int mqretcode;
     char *s = arg;
     toy_msg_t msg;
-    int mqretcode;
+    int shmid = toy_shm_get_keyid(SHM_KEY_SENSOR);
 
     printf("%s", s);
 
-    the_sensor_info->temp = 1;
-    the_sensor_info->press = 2;
-    the_sensor_info->humidity = 4;
-
     while (1) {
-        sleep(5);
-        posix_sleep_ms(5);
-
+        posix_sleep_ms(10000);
+        // 현재 고도/온도/기압 정보를  SYS V shared memory에 저장 후
+        // monitor thread에 메시지 전송한다.
+        if (the_sensor_info != NULL) {
+            the_sensor_info->temp = 35;
+            the_sensor_info->press = 55;
+            the_sensor_info->humidity = 80;
+        }
         msg.msg_type = 1;
         msg.param1 = shmid;
         msg.param2 = 0;
-
         mqretcode = mq_send(monitor_queue, (char *)&msg, sizeof(msg), 0);
         assert(mqretcode == 0);
     }
+
+    return 0;
 }
 
 int toy_send(char **args);
@@ -114,6 +113,8 @@ int toy_mutex(char **args);
 int toy_shell(char **args);
 int toy_message_queue(char **args);
 int toy_read_elf_header(char **args);
+int toy_dump_state(char **args);
+int toy_busy(char **args);
 int toy_exit(char **args);
 
 char *builtin_str[] = {
@@ -122,6 +123,8 @@ char *builtin_str[] = {
     "sh",
     "mq",
     "elf",
+    "dump",
+    "busy",
     "exit"
 };
 
@@ -131,6 +134,8 @@ int (*builtin_func[]) (char **) = {
     &toy_shell,
     &toy_message_queue,
     &toy_read_elf_header,
+    &toy_dump_state,
+    &toy_busy,
     &toy_exit
 };
 
@@ -194,19 +199,60 @@ int toy_read_elf_header(char **args)
         printf("cannot open ./sample/sample.elf\n");
         return 1;
     }
-    if(fstat(in_fd, &st) < 0){
-        perror("fstat");
-        exit(1);
+
+    if (!fstat(in_fd, &st)) {
+        contents_sz = st.st_size;
+        if (!contents_sz) {
+            printf("./sample/sample.elf is empty\n");
+            return 1;
+        }
+        printf("real size: %ld\n", contents_sz);
+        map = (Elf64Hdr *)mmap(NULL, contents_sz, PROT_READ, MAP_PRIVATE, in_fd, 0);
+        printf("Object file type : %d\n", map->e_type);
+        printf("Architecture : %d\n", map->e_machine);
+        printf("Object file version : %d\n", map->e_version);
+        printf("Entry point virtual address : %ld\n", map->e_entry);
+        printf("Program header table file offset : %ld\n", map->e_phoff);
+        munmap(map, contents_sz);
     }
 
-    map = (Elf64Hdr*)mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, in_fd, 0);
-    printf("read size: %ld\n", st.st_size);
-    printf("Object file type: %d\n", map->e_type);
-    printf("Architecture: %d\n", map->e_machine);
-    printf("Object file version: %d\n", map->e_version);
-    printf("Entry point virtual address: %ld\n", map->e_entry);
-    printf("Program header table file offset: %d", map->e_type);
-    munmap(map, st.st_size);
+    return 1;
+}
+
+int toy_dump_state(char **args)
+{
+    int mqretcode;
+    toy_msg_t msg;
+
+    msg.msg_type = DUMP_STATE;
+    msg.param1 = 0;
+    msg.param2 = 0;
+    mqretcode = mq_send(camera_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+    mqretcode = mq_send(monitor_queue, (char *)&msg, sizeof(msg), 0);
+    assert(mqretcode == 0);
+
+    return 1;
+}
+
+int toy_mincore(char **args)
+{
+    unsigned char vec[20];
+    int res;
+    size_t page = sysconf(_SC_PAGESIZE);
+    void *addr = mmap(NULL, 20 * page, PROT_READ | PROT_WRITE,
+                    MAP_NORESERVE | MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+    res = mincore(addr, 10 * page, vec);
+    assert(res == 0);
+
+    return 1;
+}
+
+int toy_busy(char **args)
+{
+    while(1)
+        ;
+    return 1;
 }
 
 int toy_exit(char **args)
@@ -344,18 +390,12 @@ int input()
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sa.sa_sigaction = segfault_handler;
 
-    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGSEGV, &sa, NULL); 
 
-        shmid = shmget(SHM_KEY_SENSOR, sizeof(shm_sensor_t), IPC_CREAT | 0777);
-    if (shmid < 0) {
-        perror("shmget failed");
-        exit(EXIT_FAILURE);
-    }
-
-    the_sensor_info = (shm_sensor_t *)shmat(shmid, NULL, 0);
-    if (the_sensor_info == (void *)-1) {
-        perror("shmat failed");
-        exit(EXIT_FAILURE);
+    the_sensor_info = (shm_sensor_t *)toy_shm_create(SHM_KEY_SENSOR, sizeof(shm_sensor_t));
+    if ( the_sensor_info == (void *)-1 ) {
+        the_sensor_info = NULL;
+        printf("Error in shm_create SHMID=%d SHM_KEY_SENSOR\n", SHM_KEY_SENSOR);
     }
 
     watchdog_queue = mq_open("/watchdog_queue", O_RDWR);
