@@ -91,8 +91,6 @@ void *sensor_thread(void* arg)
 
     while (1) {
         posix_sleep_ms(10000);
-        // 현재 고도/온도/기압 정보를  SYS V shared memory에 저장 후
-        // monitor thread에 메시지 전송한다.
         if (the_sensor_info != NULL) {
             the_sensor_info->temp = 35;
             the_sensor_info->press = 55;
